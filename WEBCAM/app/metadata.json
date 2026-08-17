@@ -1,0 +1,7 @@
+{
+  "name": "Webcam Confusion Detector",
+  "description": "An AI-powered application that uses your webcam to track eye movements (fixations, saccades, regressions) and mouse behavior to detect moments of confusion while reading, inspired by academic research on e-learning.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

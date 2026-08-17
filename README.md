@@ -14,6 +14,8 @@ The system shows a reader a page of text, records where their eyes go, converts 
 
 **Current status (August 2026):** the full pipeline runs end-to-end and there are working demos, but the trained model has a known label/feature-leakage flaw (§10) that means it learned *screen positions of confusing lines*, not *eye-movement signatures of confusion*. Fixing that is the first item of the next experiment plan (§11). Do not present the current model's accuracy as a result.
 
+**There are two tracking methods in this repo.** This README covers the **Tobii track**. A second intern built a **webcam-only track** (MediaPipe iris tracking in the browser, no eye tracker hardware) — it lives in [`WEBCAM/`](WEBCAM/README.md) with its own runbook, a feature-parity analysis against this pipeline (which Tobii features the webcam can and cannot reproduce — saccades, AOIs, pupil), and its own task list. Read this document first, then that one.
+
 ### How gaze reaches Python (important — read this first)
 
 The code does **not** use the Tobii SDK. Instead:
@@ -61,6 +63,7 @@ IITJ_Project/
 
 Also in the repo root:
 
+- `WEBCAM/` — the webcam-only confusion detector (React + MediaPipe, no Tobii needed): vendored app source in `WEBCAM/app/` plus its own runbook and next-task list in [`WEBCAM/README.md`](WEBCAM/README.md).
 - `DOCUMENTATION_.docx` — the previous intern's original write-up (this README supersedes it but keep it for reference).
 - `working_video.zip` (Git LFS, ~374 MB) — **screen-recorded demos of every procedure below.** Watch the matching video before running each stage the first time:
 
@@ -239,6 +242,8 @@ Collects gaze + mouse + per-paragraph helpfulness ratings on real Wikipedia page
 **Experiment 4 — Real gaze stream.** Get SDK-level access (Tobii Pro Spark or a Pro SDK-licensed device): 60+ Hz gaze plus **pupil diameter**, proper I-VT fixation/saccade classification, and add pupil-dilation features to Experiment 2's set. If stuck with the Ghost bubble, first measure and report its true sampling rate (timestamps in `gaze.csv`).
 
 **Experiment 5 — Close the loop.** Only after 2–4 hold up: connect the validated model to the POPUP intervention (summary/comic on *predicted* confusion instead of rule triggers) and run a small user study: does the intervention actually help comprehension (quiz scores) vs. a no-intervention control?
+
+**Experiment 6 — Webcam track (parallel effort).** Bring the webcam-only detector up to research grade and validate it against the Tobii: tasks W1–W7 in [`WEBCAM/README.md`](WEBCAM/README.md) §5. The centerpiece is W5 — recording webcam and Tobii **simultaneously** on the same reader (they don't conflict: the webcam never reads the screen, so the Ghost bubble stays on) to measure exactly how much accuracy the webcam loses. The end goal is the comparison study: same labels, same evaluation, Tobii features vs. webcam features (W7).
 
 **Ongoing — cleanup as you touch things:** delete the dead commented halves, extract the shared bubble/fixation code into one module imported everywhere, rename `cnn.py` → `collect.py`, and keep `requirements.txt` current.
 
