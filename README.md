@@ -1,1 +1,259 @@
-# IITJ_ResearchWork_Gaze
+# Gaze-Based Confusion Detection — Handover & Runbook
+
+**Project:** Detecting reader confusion from eye movements (Tobii eye tracker) while reading text on screen.
+**Lab:** Ubiquitous & Systems Research, IIT Jodhpur
+**This document:** everything the next intern needs to reproduce the setup from zero, run every experiment exactly as the previous intern did, understand the known problems, and run the next set of experiments.
+
+Read this top to bottom once before touching anything. The stages are in the exact order you must do them.
+
+---
+
+## 1. What this project is
+
+The system shows a reader a page of text, records where their eyes go, converts the gaze stream into **fixations** (eyes holding still on a spot) and **saccades/regressions** (jumps, especially backward jumps), and tries to detect the moments the reader is **confused** — either with hand-written rules or with a trained ML model (Random Forest / XGBoost). Ground-truth confusion labels come from the reader clicking a "Yes (Confused)" popup while reading.
+
+**Current status (August 2026):** the full pipeline runs end-to-end and there are working demos, but the trained model has a known label/feature-leakage flaw (§10) that means it learned *screen positions of confusing lines*, not *eye-movement signatures of confusion*. Fixing that is the first item of the next experiment plan (§11). Do not present the current model's accuracy as a result.
+
+### How gaze reaches Python (important — read this first)
+
+The code does **not** use the Tobii SDK. Instead:
+
+1. **Tobii Ghost** (a Tobii overlay app) draws a solid green bubble on screen at your gaze point, in a specific green: `#CC10F61F`.
+2. Every Python capture script takes rapid full-screen screenshots with `pyautogui` and finds that green bubble with OpenCV color filtering (HSV hue 55–70).
+3. The bubble's pixel position = the gaze point.
+
+Consequences you must respect:
+
+- **Nothing else green may be on screen** during recording (no green UI, wallpapers, or highlighted text), or detection jumps to it.
+- **Never change the bubble color/shape** in Tobii Ghost — the HSV range in every script is tuned to `#CC10F61F`, solid.
+- Effective sampling is limited by screenshot speed (~10–20 Hz in practice, vs the tracker's native 60+ Hz). This is a known limitation (§10.4).
+
+---
+
+## 2. Repository map
+
+The code and data ship as a Git LFS zip. After cloning and unzipping (§3, step 3) you have:
+
+```
+IITJ_Project/
+├── CONFUSION/          ← main pipeline: dataset collection → labeling → ML model → live prediction
+│   ├── aoi.py            AOI extraction: OCR the reading page into one bounding box per text line
+│   ├── aoi_c.py          small AOI helper/variant
+│   ├── cnn.py            DATA COLLECTION script (misnamed — contains no CNN):
+│   │                     records gaze + fixations + "Yes (Confused)" clicks + scanpath images
+│   ├── feature.py        older variant of the collection script (first half is dead commented code)
+│   ├── label.py          converts confusion clicks into per-fixation 0/1 labels
+│   ├── test.py           LIVE PREDICTION: loads trained model, shows "😕 Confused" popup per fixation
+│   ├── confusion_model_rf4.pkl, confusion_model_xgb_new.pkl     trained models
+│   ├── feature_names_order.pkl, feature_names_order_xgb_new.pkl feature column order for each model
+│   ├── fixation_label_final.csv   the labeled training dataset (1,553 fixations, 559 labeled confused)
+│   ├── data_logs/, demo_video_logs/, test_data_logs/            collected sessions (gaze/fixation/AOI CSVs)
+│   └── test_aoi_debug/, demo_debug/                             AOI overlay debug screenshots
+├── POPUP/              ← rule-based (no ML) confusion demos with ChatGPT visual aids
+│   ├── main_label.py     3 regressions on a line OR 7 clustered fixations → popup → GPT labeled image
+│   └── main_comic.py     same trigger → GPT 4-panel comic of the confusing passage
+└── web/                ← Wikipedia reading study: gaze + mouse + per-paragraph helpfulness ratings
+    ├── extension/        Chrome extension (Wikipedia only): annotate blocks 0–3, log mouse, export CSVs
+    ├── main.py           gaze/fixation/saccade recorder to run alongside the extension
+    ├── final.py          merges all CSVs into one block-level JSON dataset
+    └── graph2.py, plot_help.py   analysis plots (KDEs, boxplots vs. helpfulness)
+```
+
+Also in the repo root:
+
+- `DOCUMENTATION_.docx` — the previous intern's original write-up (this README supersedes it but keep it for reference).
+- `working_video.zip` (Git LFS, ~374 MB) — **screen-recorded demos of every procedure below.** Watch the matching video before running each stage the first time:
+
+| Video | Shows |
+|---|---|
+| `Enable_green_bubble` | Tobii Experience + Tobii Ghost setup (§4) |
+| `DataCollection_of_Confusion` | AOI extraction + dataset collection (§5–6) |
+| `Label_train_test_model` / `Test_model` | Labeling, training, live prediction (§7–9) |
+| `LabelImage_popup` / `ComicScript_popup` | POPUP demos (§9.3) |
+| `web_based_annotation` | Wikipedia study (§9.4) |
+
+---
+
+## 3. Stage 1 — Set up the computer (no Tobii needed yet)
+
+**You need a Windows 10/11 PC.** Tobii Experience and Tobii Ghost are Windows-only, and the scripts use the `keyboard` library and Tk popups as configured for Windows.
+
+1. **Install Git LFS, then clone.** Without LFS you get 130-byte pointer files instead of the zips.
+   ```
+   git lfs install
+   git clone https://github.com/ubisysresearch/ResearchWork_Gaze.git
+   ```
+   Sanity check: `IITJ_Project.zip` should be ~24 MB and `working_video.zip` ~374 MB. If they are tiny text files, run `git lfs pull`.
+2. **Install Python 3.10+** (tick "Add to PATH").
+3. **Unzip `IITJ_Project.zip`** in the repo root so you get the `IITJ_Project/` tree shown in §2.
+4. **Install Python dependencies:**
+   ```
+   pip install -r requirements.txt
+   ```
+5. **Install Tesseract OCR** (needed by `aoi.py`): download the Windows installer from https://github.com/UB-Mannheim/tesseract/wiki, install, and add its folder to PATH. Verify with `tesseract --version`.
+6. **Fixed display setup:** pick the monitor, resolution, and Windows display scaling (100% recommended) you will use, and never change them between AOI extraction and recording sessions — all coordinates in this project are absolute screen pixels (§10.7).
+
+---
+
+## 4. Stage 2 — Connect and configure the Tobii (do this now, before any experiment)
+
+1. **Mount the tracker** on the bottom bezel of your monitor (magnetic strip, centered) and **plug in the USB cable now.**
+2. **Install "Tobii Experience"** from the Microsoft Store. Open it — it should detect the tracker.
+3. **Calibrate:** Tobii Experience → Settings → Calibration, follow the dots.
+   **Recalibrate for every new participant, and whenever the tracker or monitor is moved.** Uncalibrated gaze is silently wrong by centimeters; this ruins the data without any visible error.
+4. **Install "Tobii Ghost"** from https://gaming.tobii.com/getstarted.
+5. **Configure Tobii Ghost** (this is what the Python code depends on):
+   - Preview → **ON**
+   - Shape → **Solid**
+   - Color → **`#CC10F61F`**
+6. **Verify:** a solid green circle now follows your gaze everywhere on screen. Watch the `Enable_green_bubble` video if anything looks different.
+
+The Tobii + Ghost bubble must be running during **every** recording below. If the bubble is off, the scripts see nothing and log nothing (they don't error — they just wait).
+
+---
+
+## 5. Stage 3 — Extract AOIs for a reading page (`CONFUSION/aoi.py`)
+
+AOIs ("areas of interest") are one bounding box per text line, produced by OCR from a screenshot. Every later script maps fixations to these boxes. Redo this stage **every time the reading page, window position, zoom, or resolution changes.**
+
+1. Open the story/reading page in your browser, sized and positioned exactly as it will be during recording. **The whole text must be visible without scrolling** — scrolling during recording invalidates the AOIs (§10.7).
+2. In a terminal: `cd IITJ_Project/CONFUSION`, then `python aoi.py`.
+3. **Immediately click onto the reading page** — the script screenshots whatever is on screen right away, with no countdown.
+4. It writes:
+   - `demo_debug/story_from_screenshot_with_aoistest2.png` — the screenshot with green boxes drawn per line. **Open it and check every text line got a sensibly tight box.** If lines are missed or merged, improve text contrast/zoom and rerun.
+   - `demo_video_logs/aoi_lines_1.csv` — the coordinates: `AOI_ID, x1, y1, x2, y2`.
+
+> **Filename drift warning:** output/input filenames are hardcoded constants at the top of each script and were edited between sessions (`aoi_lines_1.csv`, `aoi_lines2.csv`, `aoi_lines_test2.csv`…). Before running any script, open it and check its `aoi_file_path` / `output_dir` constants line up with the file the previous stage actually produced.
+
+---
+
+## 6. Stage 4 — Collect a confusion dataset (`CONFUSION/cnn.py`)
+
+Despite the name, `cnn.py` is the data collection script (there is no CNN anywhere in the project).
+
+1. Confirm the AOI CSV from Stage 3 exists at the path named in `cnn.py` (`demo_video_logs/aoi_lines_1.csv` by default).
+2. Green bubble running (Stage 2), reading page on screen, participant calibrated.
+3. Run `python cnn.py`. A small draggable popup titled **"Gaze Capture"** with a **"Yes (Confused)"** button appears. Drag it somewhere out of the way (not over the text).
+4. Press **ESC** to start recording, and have the participant read naturally.
+5. **Whenever the participant feels confused, they click "Yes (Confused)"** — this marks the preceding ~15 seconds of gaze as a confusion segment and logs the AOI they were looking at.
+6. Press **q** to stop.
+
+Outputs, in `demo_video_logs/`:
+
+| File | Contents |
+|---|---|
+| `gaze.csv` | raw bubble positions: `gaze_x, gaze_y, timestamp` |
+| `fixation.csv` | one row per detected fixation: position, start/end, `duration`, `dispersion`, `distance`, `saccade_before_duration`, `regression_flag`, `fixation_count_in_AOI`, then one True/False column per AOI |
+| `popup_yes_clicks/yes_click_log1.csv` | each confusion click: `timestamp, gaze_x, gaze_y, AOI_ID` |
+| `scanpath_segments/` | 15-second scanpath PNGs, `0_*.png` = normal, `1_*.png` = confused |
+
+Fixation detection parameters (top of the script): gaze held within **25 px** for ≥ **0.25 s** = fixation. `regression_flag` currently fires only on upward (previous-line) movement — see §10.5.
+
+---
+
+## 7. Stage 5 — Label the fixations (`CONFUSION/label.py`)
+
+Turns the confusion clicks into a `label` column (1 = confused) on `fixation.csv`.
+
+**This script is not runnable as-is on new data** — it has a session-specific hardcoded row range (`range(2, 33)`) and hardcoded file paths. For every new session you must edit it:
+
+1. Point the two `read_csv` paths at your session's `fixation.csv` and `yes_click_log1.csv`.
+2. Initialize the label column for **all** rows before the loop: `fixation_df['label'] = 0`.
+3. Replace the hardcoded `range(2, 33)` so it iterates over **all** rows (`fixation_df.index`).
+4. Run `python label.py` → writes `fixation_label.csv`.
+
+**Known flaw in the labeling logic itself (§10.2):** it labels *every* fixation that ever landed in a clicked AOI as confused, across the whole session, with no time window. This is the root cause of the leakage problem and the first thing the next experiments must change (§11, Experiment 1). The existing labeled dataset built this way is `fixation_label_final.csv` (1,553 rows, 559 positive).
+
+---
+
+## 8. Stage 6 — Train the model (script missing — must be recreated)
+
+**There is no training script in the repo.** The previous intern trained the `.pkl` models in an uncommitted notebook. The procedure they documented:
+
+1. Load `fixation_label.csv` with pandas.
+2. Drop non-feature columns: `start_time`, `end_time`, `fix_start_ts`; take `label` as the target `y`.
+3. Train a Random Forest and an XGBoost classifier on the rest.
+4. Save with joblib: the model (`confusion_model_*.pkl`) **and** the exact feature column order (`feature_names_order*.pkl`) — `test.py` needs both, in matching order.
+
+**Before you train anything, read §10.1.** Reproducing the old training reproduces the leakage. The correct first experiment (§11) trains on behavioral features only, with grouped evaluation, and commits the script as `CONFUSION/train.py`.
+
+---
+
+## 9. Stage 7 — Run the demos
+
+### 9.1 Live confusion prediction (`CONFUSION/test.py`)
+
+1. Extract AOIs for the **test** page (Stage 3 procedure) and save as `test_data_logs/aoi_lines_test2.csv` (or update the path in `test.py`).
+2. Confirm `confusion_model_xgb_new.pkl` + `feature_names_order_xgb_new.pkl` are present. **The AOI count of the test page must equal the training page's AOI count** or the feature columns won't line up (§10.1 — another symptom of the leakage design).
+3. Green bubble on → `python test.py` → a "Confusion Prediction" popup appears → press **ESC** to start.
+4. Per fixation it displays `AOI: AOI_X` plus "😕 Confused" or "waiting". Press **q** to stop.
+
+### 9.2 What the rule-based demos detect
+
+`POPUP/main_label.py` and `main_comic.py` skip ML entirely. A confusion event fires when either:
+- **≥ 3 regression saccades on the same line** (saccade = jump faster than 450 px/s; same line = within 32 px vertically), or
+- **≥ 7 fixations clustered in the same small area** (50 px radius).
+
+On trigger: the confusing region is cropped from the screen, OCR'd (easyocr), and a popup asks "Are you confused?" — on Yes, ChatGPT generates a summary plus a labeled illustration (`main_label.py`) or a 4-panel comic (`main_comic.py`).
+
+### 9.3 Running the POPUP demos
+
+1. Both scripts contain `openai.OpenAI(api_key="enter you api key")`. **Do not paste your key into the file** (it will end up committed). Change the line to `api_key=os.environ["OPENAI_API_KEY"]` and set the environment variable in your terminal instead.
+2. First run downloads easyocr model weights (~100 MB) — needs internet.
+3. `cd IITJ_Project/POPUP`, `python main_label.py` (or `main_comic.py`), switch to the reading page, read; the popup fires on the rules above. Outputs land in `saved_images/` and `prompt_log*.json`.
+
+### 9.4 Wikipedia reading study (`web/`)
+
+Collects gaze + mouse + per-paragraph helpfulness ratings on real Wikipedia pages.
+
+1. Chrome → `chrome://extensions` → Developer Mode ON → **Load unpacked** → select `IITJ_Project/web/extension/`. Works **only on Wikipedia**.
+2. Open a Wikipedia article and refresh. Blocks get outlines and 0–3 helpfulness buttons; a sidebar appears.
+3. `cd IITJ_Project/web`, `python main.py`, switch to the article, press **ESC** to start.
+4. Read and rate each block 0–3 as you go. When done press **q**, then click **Export Logs** in the sidebar → downloads `annotations.csv` and `mouse_log.csv`.
+5. Move both files into the session folder `main.py` wrote (`fixation.csv`, `saccade.csv`, `Gaze.csv`), update the paths in `final.py`, run `python final.py` → block-level JSON dataset.
+6. Plots: update the JSON filename inside `graph2.py` (KDE distributions) and `plot_help.py` (boxplots vs. helpfulness), run each.
+
+---
+
+## 10. Known issues and limitations (read before designing anything)
+
+1. **Feature/label leakage — the critical one.** The model's features include raw fixation position (`fix_x`, `fix_y`), `distance` from screen origin, and one-hot AOI flags, while labels were assigned *per AOI*. The model can (and by all evidence does) learn "line 7 of this story = confused" and cannot generalize to any new text. Any accuracy measured on a random train/test split of this data is meaningless. Fix: §11, Experiments 1–2.
+2. **Labeling has no time window.** A single click marks every fixation ever made in that AOI as confused for the entire session. 36% of all fixations ended up labeled "confused," which is implausibly high.
+3. **No training/evaluation code is committed.** Only model pickles exist; no split, no metrics, no seed.
+4. **Screen-scraped gaze, not SDK gaze.** ~10–20 Hz effective sampling (screenshot-rate-bound) vs 60+ Hz native; genuine saccade dynamics (20–80 ms) are invisible, and **pupil diameter — one of the strongest confusion signals — is never captured.** The workaround exists because consumer Tobii trackers license-gate raw data access; a research-grade tracker or Pro SDK license removes it.
+5. **`regression_flag` misses most regressions.** It only fires on *upward* movement; in reading, most regressions are *leftward within the same line*. Also `saccade_before_duration` is measured start-to-start, so it wrongly includes the previous fixation's duration.
+6. **Per-fixation prediction is too fine-grained.** The literature detects confusion over windows (10–15 s aggregates: regression rate, fixation count/duration, saccade amplitude). Ironically `cnn.py` already collects 15 s windows for the scanpath images — the tabular pipeline should aggregate the same way.
+7. **Everything is absolute screen pixels.** Any change to monitor, resolution, display scaling, window position, zoom, or a single scroll of the page invalidates the AOI file. Design experiments so the full text fits on one static screen.
+8. **Code hygiene:** `cnn.py` contains no CNN; `feature.py` and `test.py` are ~half dead commented-out code; the green-bubble detector is copy-pasted into six files; filenames are hand-edited constants that drift between scripts (§5 warning).
+
+---
+
+## 11. Next set of experiments (in this order)
+
+**Experiment 1 — Re-label by time, not by place.** Write a new `label.py`: a fixation is confused iff its time falls inside a window before a click (start with 15 s, matching the scanpath segments; try 5/10/15 as a sensitivity check). Rebuild the labeled dataset from the existing raw logs — no new data collection needed for this step.
+
+**Experiment 2 — Behavioral features only, honest evaluation.** Drop `fix_x`, `fix_y`, `distance`, and all AOI one-hot columns. Keep/add: duration, dispersion, corrected regression flag (leftward *or* upward), corrected saccade duration (current start − previous *end*), saccade amplitude, re-reading count per line. Aggregate per 10–15 s window (counts, means, rates). Train RF/XGBoost; evaluate with **leave-one-text-out** and, once multiple readers exist, **leave-one-participant-out**. Commit `train.py` and the metrics. *Expect accuracy to drop versus the old model — that drop is the honest baseline, and it is the result to report.*
+
+**Experiment 3 — Multi-text, multi-participant dataset.** ≥ 3 texts of graded difficulty (easy / medium / hard — hard texts generate real confusion events), ≥ 10 participants, calibration per participant (§4.3), fixed protocol: calibrate → AOI extract → read → click when confused → rest. Keep every session's raw logs, and record participant ID + text ID in the filenames.
+
+**Experiment 4 — Real gaze stream.** Get SDK-level access (Tobii Pro Spark or a Pro SDK-licensed device): 60+ Hz gaze plus **pupil diameter**, proper I-VT fixation/saccade classification, and add pupil-dilation features to Experiment 2's set. If stuck with the Ghost bubble, first measure and report its true sampling rate (timestamps in `gaze.csv`).
+
+**Experiment 5 — Close the loop.** Only after 2–4 hold up: connect the validated model to the POPUP intervention (summary/comic on *predicted* confusion instead of rule triggers) and run a small user study: does the intervention actually help comprehension (quiz scores) vs. a no-intervention control?
+
+**Ongoing — cleanup as you touch things:** delete the dead commented halves, extract the shared bubble/fixation code into one module imported everywhere, rename `cnn.py` → `collect.py`, and keep `requirements.txt` current.
+
+---
+
+## 12. Quick reference
+
+| Key | Value |
+|---|---|
+| Ghost bubble color | `#CC10F61F`, solid, preview ON |
+| Bubble HSV detection range | hue 55–70, S ≥ 180, V ≥ 180 |
+| Fixation definition | ≤ 25 px movement held ≥ 0.25 s |
+| Saccade velocity threshold (POPUP) | 450 px/s |
+| Rule triggers (POPUP) | 3 regressions on a line, or 7 fixations in 50 px cluster |
+| Confusion window on click | 15 s before click |
+| Start / stop recording | ESC / q (all capture scripts) |
+| Labeled dataset | `CONFUSION/fixation_label_final.csv` — 1,553 fixations, 559 positive |
+| Best current model | `confusion_model_xgb_new.pkl` + `feature_names_order_xgb_new.pkl` (⚠ §10.1) |

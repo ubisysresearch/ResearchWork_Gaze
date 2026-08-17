@@ -1,0 +1,22 @@
+# Core capture pipeline (CONFUSION/, web/)
+opencv-python
+numpy
+pandas
+matplotlib
+pyautogui
+keyboard
+pytesseract      # also install the Tesseract OCR binary — see README §3.5
+joblib
+scikit-learn
+xgboost
+
+# POPUP demos (ChatGPT summaries / comics)
+openai
+easyocr
+pillow
+pynput
+requests
+
+# web/ analysis (final.py)
+scipy
+fastdtw
